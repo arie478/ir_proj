@@ -9,14 +9,17 @@ import pandas as pd
 from nltk.corpus import stopwords
 from pyspark.shell import spark
 
-import inverted_index_colab
-import inverted_index_gcp
-from inverted_index_colab import *
+# import inverted_index_colab
+# import inverted_index_gcp
+from inverted_index_gcp_with_dl import *
+# from inverted_index_colab import *
 
 import psutil
 
 
 # region Function Defs
+import inverted_index_gcp_anchor_with_dl as inverted_anchor
+import inverted_index_gcp_title_with_dl as inverted_title
 
 
 def word_count(text, id):
@@ -105,7 +108,7 @@ def read_posting_list(inverted, w):
         return posting_list
 
 
-def cosine_similarity(D, Q):
+def cosine_similarity(D, Q, index):
     """
     Calculate the cosine similarity for each candidate document in D and a given query (e.g., Q).
     Generate a dictionary of cosine similarity scores
@@ -127,7 +130,9 @@ def cosine_similarity(D, Q):
     ##################################################
     # YOUR CODE HERE
     cosSimDict = {}
+    size = 0
     for docId, scores in D.iterrows():
+        size += 1
         scoresArr = np.array(scores)
         aDotB = np.dot(scoresArr, Q)
         aNormBNorm = np.linalg.norm(scoresArr) * np.linalg.norm(Q)
@@ -161,6 +166,7 @@ def generate_document_tfidf_matrix(query_to_search, index):
     total_vocab_size = len(index.term_total)
     candidates_scores = get_candidate_documents_and_scores(query_to_search,
                                                            index)  # We do not need to utilize all document. Only the docuemnts which have corrspoinding terms with the query.
+
     unique_candidates = np.unique([doc_id for doc_id, freq in candidates_scores.keys()])
     D = np.zeros((len(unique_candidates), total_vocab_size))
     D = pd.DataFrame(D)
@@ -206,10 +212,10 @@ def generate_query_tfidf_vector(query_to_search, index):
         if token in index.term_total.keys():  # avoid terms that do not appear in the index.
             tf = counter[token] / len(query_to_search)  # term frequency divded by the length of the query
             df = index.df[token]
-            idf = math.log((len(DL)) / (df + epsilon), 10)  # smoothing
-
+            idf = math.log((len(index.DL)) / (df + epsilon), 10)  # smoothing
             try:
                 ind = term_vector.index(token)
+
                 Q[ind] = tf * idf
             except:
                 pass
@@ -239,19 +245,20 @@ def get_candidate_documents_and_scores(query_to_search, index):
                                                                value: tfidf score.
     """
     candidates = {}
-    N = len(DL)
+    N = len(index.DL)
     for term in np.unique(query_to_search):
         try:
             pls = read_posting_list(index, term)
-        except:
+        except Exception as exc:
+            print(exc)
             continue
         list_of_doc = pls
-        normlized_tfidf = [(doc_id, (freq / DL[str(doc_id)]) * math.log(N / index.df[term], 10)) for doc_id, freq in
+        normlized_tfidf = [(doc_id, (freq / index.DL[doc_id]) * math.log(N / index.df[term], 10)) for doc_id, freq
+                           in
                            list_of_doc]
 
         for doc_id, tfidf in normlized_tfidf:
             candidates[(doc_id, term)] = candidates.get((doc_id, term), 0) + tfidf
-
     return candidates
 
 
@@ -300,12 +307,58 @@ def get_topN_score_for_queries(queries_to_search, index, N=3):
     topNQueriesDict = {}
     # For every pair, get the vectors and tfIdf scores and use our previous cosSim function
     for pair in queries_to_search.items():
+        # print(pair)
         queryVector = generate_query_tfidf_vector(pair[1], index)
+        # print("queryVector")
+        # print(queryVector)
         tfIdfScore = generate_document_tfidf_matrix(pair[1], index)
-        cosSimDict = cosine_similarity(tfIdfScore, queryVector)
+        # print("tfIdfScore")
+        # print(tfIdfScore)
+        time1 = time()
+
+        cosSimDict = cosine_similarity(tfIdfScore, queryVector, index)
+
+        time2 = time()
+        print('cosSimDict {:.3f} sec'.format((time2 - time1)))
+
+        # print("cosSimDict")
+        # print(cosSimDict)
         topNQueriesDict[pair[0]] = get_top_n(cosSimDict, N)
     return topNQueriesDict
     ##################################################
+
+
+def get_topN_score_for_queries_2(queries_to_search, index, N=3):
+    """
+    Generate a dictionary that gathers for every query its topN score.
+
+    Parameters:
+    -----------
+    queries_to_search: a dictionary of queries as follows:
+                                                        key: query_id
+                                                        value: list of tokens.
+    index:           inverted index loaded from the corresponding files.
+    N: Integer. How many documents to retrieve. This argument is passed to the topN function. By default N = 3, for the topN function.
+
+    Returns:
+    -----------
+    return: a dictionary of queries and topN pairs as follows:
+                                                        key: query_id
+                                                        value: list of pairs in the following format:(doc_id, score).
+    """
+    ##################################################
+    # YOUR CODE HERE
+    topNQueriesDict = {}
+
+    for q_id, q_list in queries_to_search.items():
+        candidates = get_candidate_documents_and_scores(q_list, index)
+        for doc_id_term, n_tfidf in candidates.items():
+            candidates[doc_id_term] = n_tfidf / (len(q_list) * index.DL[doc_id_term[0]])
+
+        topNQueriesDict[q_id] = sorted([(doc_id_term[0], score) for doc_id_term, score in candidates.items()], key=lambda x: x[1], reverse=True)[:N]
+
+    return topNQueriesDict
+    ########
 
 
 # endregion
@@ -319,39 +372,46 @@ corpus_stopwords = ["category", "references", "also", "external", "links",
 all_stopwords = english_stopwords.union(corpus_stopwords)
 RE_WORD = re.compile(r"""[\#\@\w](['\-]?\w){2,24}""", re.UNICODE)
 
-inverted = inverted_index_gcp.InvertedIndex()
-bodyIndex = inverted_index_colab.InvertedIndex()
+bodyIndex = InvertedIndex.read_index("E:\\index\\body_index", "index")
+titleIndex = inverted_title.InvertedIndex.read_index("E:\\index\\title_index", "index")
+anchorIndex = inverted_anchor.InvertedIndex.read_index("E:\\index\\anchor_index", "index")
 
-output = open('E:\\index\\postings_gcp\\postings_gcp_index.pkl', 'rb')
-inverted = pickle.load(output)
-output.close()
+exit(0)
 
-bodyIndex.df = inverted.df
+# inverted = inverted_index_gcp.InvertedIndex()
+# bodyIndex = inverted_index_colab.InvertedIndex()
+#
+# output = open('E:\\index\\postings_gcp\\postings_gcp_index.pkl', 'rb')
+# inverted = pickle.load(output)
+# output.close()
+#
+# bodyIndex.df = inverted.df
+#
+# bodyIndex.term_total = inverted.term_total
 
-bodyIndex.term_total = inverted.term_total
-
-print(bodyIndex.df["python"])
-print(bodyIndex.df["chocolate"])
-print(bodyIndex.df["mask"])
+# print(bodyIndex.df["python"])
+# print(bodyIndex.df["chocolate"])
+# print(bodyIndex.df["mask"])
 
 nltk.download('stopwords')
 
 # region Load posting list of body index
 
-base_dir = "E:\\index\\postings_gcp"
-# name = "0_posting_locs"
+# base_dir = "E:\\index\\body_index"
+# # name = "0_posting_locs"
+#
+# onlyfiles = [f for f in listdir(base_dir) if isfile(join(base_dir, f))]
+#
+# super_posting_locs = defaultdict(list)
+# for file in onlyfiles:
+#     if not file.endswith("pickle"):
+#         continue
+#     with open(Path(base_dir) / f'{file}', 'rb') as f:
+#         print(file)
+#         posting_locs = pickle.load(f)
+#         for k, v in posting_locs.items():
+#             super_posting_locs[k].extend(v)
 
-onlyfiles = [f for f in listdir(base_dir) if isfile(join(base_dir, f))]
-
-super_posting_locs = defaultdict(list)
-for file in onlyfiles:
-    if not file.endswith("pickle"):
-        continue
-    with open(Path(base_dir) / f'{file}', 'rb') as f:
-        print(file)
-        posting_locs = pickle.load(f)
-        for k, v in posting_locs.items():
-            super_posting_locs[k].extend(v)
 # print(len(super_posting_locs))
 
 # endregion
@@ -412,13 +472,17 @@ for file in onlyfiles:
 
 # endregion
 
-inverted.posting_locs = super_posting_locs
+# inverted.posting_locs = super_posting_locs
 
-bodyIndex.posting_locs = super_posting_locs
+# bodyIndex.posting_locs = super_posting_locs
 
 # words, pls = zip(*bodyIndex.posting_lists_iter())
 
 # inverted.df = w2df_dict
+
+print("------------")
+print("Done loading index")
+print("------------")
 
 try:
     python2 = []
@@ -540,9 +604,16 @@ print(set(python).intersection(python2))
 print(len(python))
 print(len(python2))
 print(len(set(python).intersection(python2)))
-queries_to_search = {1: "python"}
+queries_to_search = {1: ["python"]}
 print("Top 3 results for python : ")
-print(get_topN_score_for_queries(queries_to_search, bodyIndex, N=3))
+
+time1 = time()
+
+print(get_topN_score_for_queries_2(queries_to_search, bodyIndex, N=100))
+
+time2 = time()
+print('Function took {:.3f} sec'.format((time2 - time1)))
+
 print("----------------------------------")
 
 print("----------------------------------")
@@ -553,27 +624,27 @@ print(len(migraine2))
 print(len(set(migraine).intersection(migraine2)))
 print("----------------------------------")
 
-print("----------------------------------")
-print("chocolate")
-print(set(chocolate).intersection(chocolate2))
-print("----------------------------------")
-
-print("----------------------------------")
-print("NBA")
-print(set(NBA).intersection(NBA2))
-print("----------------------------------")
-
-print("----------------------------------")
-print("yoga")
-print(set(yoga).intersection(yoga2))
-print("----------------------------------")
-
-print("----------------------------------")
-print("masks")
-print(set(masks).intersection(masks2))
-print("----------------------------------")
-
-print("----------------------------------")
-print("michelin")
-print(set(michelin).intersection(michelin2))
-print("----------------------------------")
+# print("----------------------------------")
+# print("chocolate")
+# print(set(chocolate).intersection(chocolate2))
+# print("----------------------------------")
+#
+# print("----------------------------------")
+# print("NBA")
+# print(set(NBA).intersection(NBA2))
+# print("----------------------------------")
+#
+# print("----------------------------------")
+# print("yoga")
+# print(set(yoga).intersection(yoga2))
+# print("----------------------------------")
+#
+# print("----------------------------------")
+# print("masks")
+# print(set(masks).intersection(masks2))
+# print("----------------------------------")
+#
+# print("----------------------------------")
+# print("michelin")
+# print(set(michelin).intersection(michelin2))
+# print("----------------------------------")

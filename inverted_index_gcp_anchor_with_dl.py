@@ -55,7 +55,7 @@ class MultiFileWriter:
             The function saves the posting files into the right bucket in google storage.
         '''
         file_name = self._f.name
-        blob = self.bucket.blob(f"body_index/{file_name}")
+        blob = self.bucket.blob(f"anchor_index/{file_name}")
         blob.upload_from_filename(file_name)
 
 
@@ -69,7 +69,7 @@ class MultiFileReader:
         b = []
         for f_name, offset in locs:
             if f_name not in self._open_files:
-                self._open_files[f_name] = open(f_name, 'rb')
+                self._open_files[f_name] = open("E:\\index\\anchor_index\\" + f_name, 'rb')
             f = self._open_files[f_name]
             f.seek(offset)
             n_read = min(n_bytes, BLOCK_SIZE - offset)
@@ -204,7 +204,7 @@ class InvertedIndex:
             pickle.dump(posting_locs, f)
         client = storage.Client()
         bucket = client.bucket(bucket_name)
-        blob_posting_locs = bucket.blob(f"body_index/{bucket_id}_posting_locs.pickle")
+        blob_posting_locs = bucket.blob(f"anchor_index/{bucket_id}_posting_locs.pickle")
         blob_posting_locs.upload_from_filename(f"{bucket_id}_posting_locs.pickle")
 
 
