@@ -128,6 +128,7 @@ class InvertedIndex:
             the tf of tokens, then update the index (in memory, no storage
             side-effects).
         """
+        DL[(doc_id)] = DL.get(doc_id, 0) + (len(tokens))
         w2cnt = Counter(tokens)
         self.term_total.update(w2cnt)
         for w, cnt in w2cnt.items():
