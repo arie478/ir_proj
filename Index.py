@@ -376,8 +376,6 @@ bodyIndex = InvertedIndex.read_index("E:\\index\\body_index", "index")
 titleIndex = inverted_title.InvertedIndex.read_index("E:\\index\\title_index", "index")
 anchorIndex = inverted_anchor.InvertedIndex.read_index("E:\\index\\anchor_index", "index")
 
-exit(0)
-
 # inverted = inverted_index_gcp.InvertedIndex()
 # bodyIndex = inverted_index_colab.InvertedIndex()
 #
@@ -604,12 +602,13 @@ print(set(python).intersection(python2))
 print(len(python))
 print(len(python2))
 print(len(set(python).intersection(python2)))
-queries_to_search = {1: ["python"]}
-print("Top 3 results for python : ")
+
+queries_to_search = {1: ["fitnessgram"]}
+print("Top 3 results for fitnessgram : ")
 
 time1 = time()
 
-print(get_topN_score_for_queries_2(queries_to_search, bodyIndex, N=100))
+print(get_topN_score_for_queries_2(queries_to_search, bodyIndex, N=3))
 
 time2 = time()
 print('Function took {:.3f} sec'.format((time2 - time1)))
