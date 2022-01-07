@@ -2,101 +2,27 @@ import gc
 import math
 from os import listdir
 from os.path import isfile, join
+from time import sleep
 
 import nltk
 import numpy as np
 import pandas as pd
 from nltk.corpus import stopwords
-from pyspark.shell import spark
+# from pyspark.shell import spark
 
-# import inverted_index_colab
-# import inverted_index_gcp
-from inverted_index_gcp_with_dl import *
-# from inverted_index_colab import *
+from tqdm import tqdm
 
 import psutil
 
-
-# region Function Defs
+from inverted_index_gcp_with_dl import *
 import inverted_index_gcp_anchor_with_dl as inverted_anchor
 import inverted_index_gcp_title_with_dl as inverted_title
 
 
-def word_count(text, id):
-    """ Count the frequency of each word in `text` (tf) that is not included in
-  `all_stopwords` and return entries that will go into our posting lists.
-  Parameters:
-  -----------
-    text: str
-      Text of one document
-    id: int
-      Document id
-  Returns:
-  --------
-    List of tuples
-      A list of (token, (doc_id, tf)) pairs
-      for example: [("Anarchism", (12, 5)), ...]
-  """
-    tokens = [token.group() for token in RE_WORD.finditer(text.lower())]
-    ######################################################################
-    # YOUR CODE HERE
-
-    # Trim tokens for stopwrods
-    tokens = [token for token in tokens if token not in all_stopwords]
-
-    # Count the frequency
-    wordCount = Counter(tokens)
-
-    # Use map to generate the desired tuple format
-    return list(map(lambda word: (word, (id, wordCount[word])), wordCount.keys()))
-    ######################################################################
+# region Function Definitions
 
 
-def reduce_word_counts(unsorted_pl):
-    """ Returns a sorted posting list by wiki_id.
-  Parameters:
-  -----------
-    unsorted_pl: list of tuples
-      A list of (wiki_id, tf) tuples
-  Returns:
-  --------
-    list of tuples
-      A sorted posting list.
-  """
-    ######################################################################
-    # YOUR CODE HERE
-    # Sort list of tuples by tuple value in place 0
-    return sorted(unsorted_pl, key=lambda idTfTuple: idTfTuple[0])
-    ######################################################################
-
-
-def calculate_df(postings):
-    """ Takes a posting list RDD and calculate the df for each token.
-  Parameters:
-  -----------
-    postings: RDD
-      An RDD where each element is a (token, posting_list) pair.
-  Returns:
-  --------
-    RDD
-      An RDD where each element is a (token, df) pair.
-  """
-
-    ######################################################################
-    # YOUR CODE HERE
-    # Take the posting list and count in how many docs it appears
-    def dfCount(postingList):
-        dfSum = 0
-        for pair in postingList:
-            dfSum += 1
-        return dfSum
-
-    # Return the modified RDD
-    return postings.mapValues(dfCount)
-    #############
-
-
-def read_posting_list(inverted, w):
+def read_posting_list_body(inverted, w):
     with closing(MultiFileReader()) as reader:
         locs = inverted.posting_locs[w]
         b = reader.read(locs, inverted.df[w] * TUPLE_SIZE)
@@ -108,118 +34,28 @@ def read_posting_list(inverted, w):
         return posting_list
 
 
-def cosine_similarity(D, Q, index):
-    """
-    Calculate the cosine similarity for each candidate document in D and a given query (e.g., Q).
-    Generate a dictionary of cosine similarity scores
-    key: doc_id
-    value: cosine similarity score
-
-    Parameters:
-    -----------
-    D: DataFrame of tfidf scores.
-
-    Q: vectorized query with tfidf scores
-
-    Returns:
-    -----------
-    dictionary of cosine similarity score as follows:
-                                                                key: document id (e.g., doc_id)
-                                                                value: cosine similarty score.
-    """
-    ##################################################
-    # YOUR CODE HERE
-    cosSimDict = {}
-    size = 0
-    for docId, scores in D.iterrows():
-        size += 1
-        scoresArr = np.array(scores)
-        aDotB = np.dot(scoresArr, Q)
-        aNormBNorm = np.linalg.norm(scoresArr) * np.linalg.norm(Q)
-        # We calculate using the formula learned at the lecture
-        docCosSim = aDotB / aNormBNorm
-        cosSimDict[docId] = docCosSim
-    return cosSimDict
-    ##################################################
+def read_posting_list_title(inverted, w):
+    with closing(inverted_title.MultiFileReader()) as reader:
+        locs = inverted.posting_locs[w]
+        b = reader.read(locs, inverted.df[w] * TUPLE_SIZE)
+        posting_list = []
+        for i in range(inverted.df[w]):
+            doc_id = int.from_bytes(b[i * TUPLE_SIZE:i * TUPLE_SIZE + 4], 'big')
+            tf = int.from_bytes(b[i * TUPLE_SIZE + 4:(i + 1) * TUPLE_SIZE], 'big')
+            posting_list.append((doc_id, tf))
+        return posting_list
 
 
-def generate_document_tfidf_matrix(query_to_search, index):
-    """
-    Generate a DataFrame `D` of tfidf scores for a given query.
-    Rows will be the documents candidates for a given query
-    Columns will be the unique terms in the index.
-    The value for a given document and term will be its tfidf score.
-
-    Parameters:
-    -----------
-    query_to_search: list of tokens (str). This list will be preprocessed in advance (e.g., lower case, filtering stopwords, etc.').
-                     Example: 'Hello, I love information retrival' --->  ['hello','love','information','retrieval']
-
-    index:           inverted index loaded from the corresponding files.
-
-    words,pls: generator for working with posting.
-    Returns:
-    -----------
-    DataFrame of tfidf scores.
-    """
-
-    total_vocab_size = len(index.term_total)
-    candidates_scores = get_candidate_documents_and_scores(query_to_search,
-                                                           index)  # We do not need to utilize all document. Only the docuemnts which have corrspoinding terms with the query.
-
-    unique_candidates = np.unique([doc_id for doc_id, freq in candidates_scores.keys()])
-    D = np.zeros((len(unique_candidates), total_vocab_size))
-    D = pd.DataFrame(D)
-
-    D.index = unique_candidates
-    D.columns = index.term_total.keys()
-
-    for key in candidates_scores:
-        tfidf = candidates_scores[key]
-        doc_id, term = key
-        D.loc[doc_id][term] = tfidf
-
-    return D
-
-
-def generate_query_tfidf_vector(query_to_search, index):
-    """
-    Generate a vector representing the query. Each entry within this vector represents a tfidf score.
-    The terms representing the query will be the unique terms in the index.
-
-    We will use tfidf on the query as well.
-    For calculation of IDF, use log with base 10.
-    tf will be normalized based on the length of the query.
-
-    Parameters:
-    -----------
-    query_to_search: list of tokens (str). This list will be preprocessed in advance (e.g., lower case, filtering stopwords, etc.').
-                     Example: 'Hello, I love information retrival' --->  ['hello','love','information','retrieval']
-
-    index:           inverted index loaded from the corresponding files.
-
-    Returns:
-    -----------
-    vectorized query with tfidf scores
-    """
-
-    epsilon = .0000001
-    total_vocab_size = len(index.term_total)
-    Q = np.zeros((total_vocab_size))
-    term_vector = list(index.term_total.keys())
-    counter = Counter(query_to_search)
-    for token in np.unique(query_to_search):
-        if token in index.term_total.keys():  # avoid terms that do not appear in the index.
-            tf = counter[token] / len(query_to_search)  # term frequency divded by the length of the query
-            df = index.df[token]
-            idf = math.log((len(index.DL)) / (df + epsilon), 10)  # smoothing
-            try:
-                ind = term_vector.index(token)
-
-                Q[ind] = tf * idf
-            except:
-                pass
-    return Q
+def read_posting_list_anchor(inverted, w):
+    with closing(inverted_anchor.MultiFileReader()) as reader:
+        locs = inverted.posting_locs[w]
+        b = reader.read(locs, inverted.df[w] * TUPLE_SIZE)
+        posting_list = []
+        for i in range(inverted.df[w]):
+            doc_id = int.from_bytes(b[i * TUPLE_SIZE:i * TUPLE_SIZE + 4], 'big')
+            tf = int.from_bytes(b[i * TUPLE_SIZE + 4:(i + 1) * TUPLE_SIZE], 'big')
+            posting_list.append((doc_id, tf))
+        return posting_list
 
 
 def get_candidate_documents_and_scores(query_to_search, index):
@@ -248,7 +84,7 @@ def get_candidate_documents_and_scores(query_to_search, index):
     N = len(index.DL)
     for term in np.unique(query_to_search):
         try:
-            pls = read_posting_list(index, term)
+            pls = read_posting_list_body(index, term)
         except Exception as exc:
             print(exc)
             continue
@@ -262,73 +98,7 @@ def get_candidate_documents_and_scores(query_to_search, index):
     return candidates
 
 
-def get_top_n(sim_dict, N=3):
-    """
-    Sort and return the highest N documents according to the cosine similarity score.
-    Generate a dictionary of cosine similarity scores
-
-    Parameters:
-    -----------
-    sim_dict: a dictionary of similarity score as follows:
-                                                                key: document id (e.g., doc_id)
-                                                                value: similarity score. We keep up to 5 digits after the decimal point. (e.g., round(score,5))
-
-    N: Integer (how many documents to retrieve). By default N = 3
-
-    Returns:
-    -----------
-    a ranked list of pairs (doc_id, score) in the length of N.
-    """
-
-    return sorted([(doc_id, round(score, 5)) for doc_id, score in sim_dict.items()], key=lambda x: x[1], reverse=True)[
-           :N]
-
-
 def get_topN_score_for_queries(queries_to_search, index, N=3):
-    """
-    Generate a dictionary that gathers for every query its topN score.
-
-    Parameters:
-    -----------
-    queries_to_search: a dictionary of queries as follows:
-                                                        key: query_id
-                                                        value: list of tokens.
-    index:           inverted index loaded from the corresponding files.
-    N: Integer. How many documents to retrieve. This argument is passed to the topN function. By default N = 3, for the topN function.
-
-    Returns:
-    -----------
-    return: a dictionary of queries and topN pairs as follows:
-                                                        key: query_id
-                                                        value: list of pairs in the following format:(doc_id, score).
-    """
-    ##################################################
-    # YOUR CODE HERE
-    topNQueriesDict = {}
-    # For every pair, get the vectors and tfIdf scores and use our previous cosSim function
-    for pair in queries_to_search.items():
-        # print(pair)
-        queryVector = generate_query_tfidf_vector(pair[1], index)
-        # print("queryVector")
-        # print(queryVector)
-        tfIdfScore = generate_document_tfidf_matrix(pair[1], index)
-        # print("tfIdfScore")
-        # print(tfIdfScore)
-        time1 = time()
-
-        cosSimDict = cosine_similarity(tfIdfScore, queryVector, index)
-
-        time2 = time()
-        print('cosSimDict {:.3f} sec'.format((time2 - time1)))
-
-        # print("cosSimDict")
-        # print(cosSimDict)
-        topNQueriesDict[pair[0]] = get_top_n(cosSimDict, N)
-    return topNQueriesDict
-    ##################################################
-
-
-def get_topN_score_for_queries_2(queries_to_search, index, N=3):
     """
     Generate a dictionary that gathers for every query its topN score.
 
@@ -355,136 +125,162 @@ def get_topN_score_for_queries_2(queries_to_search, index, N=3):
         for doc_id_term, n_tfidf in candidates.items():
             candidates[doc_id_term] = n_tfidf / (len(q_list) * index.DL[doc_id_term[0]])
 
-        topNQueriesDict[q_id] = sorted([(doc_id_term[0], score) for doc_id_term, score in candidates.items()], key=lambda x: x[1], reverse=True)[:N]
+        topNQueriesDict[q_id] = sorted([(doc_id_term[0], score) for doc_id_term, score in candidates.items()],
+                                       key=lambda x: x[1], reverse=True)[:N]
 
     return topNQueriesDict
     ########
 
 
+def binary_search_title(queries_to_search, index, N):
+    # this function calculates the intersection of words of the query with each document's title. the function
+    # returns the more "relevent" documents for each query acoording to their title using a simple boolean model
+    results_of_queries = {}  # {query_id : list of docs pairs (doc_id, num_of_unique_intersections with query_id)}
+    postings_lists = {}  # a dict of w : posting list pairs that we have saw so far..  #we don't want to perform the read_posting_list operation few times on the same w.
+    for query_id, tokens in queries_to_search.items():
+        current_query_rel_docs = {}
+        for token in np.unique(tokens):
+            if token in postings_lists.keys():
+                token_postings_list = postings_lists[token]
+            else:
+                token_postings_list = read_posting_list_title(index, token)
+                postings_lists[token] = token_postings_list
+            for doc in token_postings_list:
+                doc_id = doc[0]
+                current_query_rel_docs[doc_id] = current_query_rel_docs.get(doc_id, 0) + 1
+        results_of_queries[query_id] = sorted(current_query_rel_docs.items(), key=lambda x: x[1], reverse=True)[:N]
+    return results_of_queries
+
+
+def binary_search_anchor(queries_to_search, index, N):
+    # this function calculates the intersection of words of the query with each document's title. the function
+    # returns the more "relevant" documents for each query according to their title using a simple boolean model
+    results_of_queries = {}  # {query_id : list of docs pairs (doc_id, num_of_unique_intersections with query_id)}
+    postings_lists = {}  # a dict of w : posting list pairs that we have saw so far..  #we don't want to perform the
+    # read_posting_list operation few times on the same w.
+    for query_id, tokens in queries_to_search.items():
+        current_query_rel_docs = {}
+        for token in np.unique(tokens):
+            if token in postings_lists.keys():
+                token_postings_list = postings_lists[token]
+            else:
+                token_postings_list = read_posting_list_anchor(index, token)
+                postings_lists[token] = token_postings_list
+            for doc in token_postings_list:
+                doc_id = doc[0]
+                current_query_rel_docs[doc_id] = current_query_rel_docs.get(doc_id, 0) + 1
+        results_of_queries[query_id] = sorted(current_query_rel_docs.items(), key=lambda x: x[1], reverse=True)[:N]
+    return results_of_queries
+
+
+def get_page_views(wiki_ids):
+    page_views = []
+    for doc_id in wiki_ids:
+        try:
+            page_view_of_doc_id = page_view[doc_id]
+        except KeyError:
+            page_view_of_doc_id = f"Page {doc_id} didn't exist yet as of August 2021"
+        page_views.append(page_view_of_doc_id)
+    return page_views
+
+
+def get_page_rank(wiki_ids):
+    page_ranks = []
+    for doc_id in wiki_ids:
+        try:
+            page_rank_of_doc_id = page_rank[doc_id]
+        except KeyError:
+            page_rank_of_doc_id = f"Page {doc_id} didn't exist yet as of August 2021"
+        page_ranks.append(page_rank_of_doc_id)
+    return page_ranks
+
+
+def search_body(query):
+    body_result = []
+    queries_to_search = {1: query}
+    body_results = get_topN_score_for_queries(queries_to_search, bodyIndex, N=100)
+    result = match_titles_for_docs(body_results[1])
+    return result
+
+
+def search_binary_title(query):
+    body_result = []
+    queries_to_search = {1: query}
+    title_results = binary_search_title(queries_to_search, titleIndex, N=100)
+    result = match_titles_for_docs(title_results[1])
+    return result
+
+
+def search_binary_anchor(query):
+    body_result = []
+    queries_to_search = {1: query}
+    anchor_results = binary_search_anchor(queries_to_search, anchorIndex, N=100)
+    result = match_titles_for_docs(anchor_results[1])
+    return result
+
+
+def match_titles_for_docs(doc_tf_tuples):
+    docId_titles = []
+    for doc_tf_tuple in doc_tf_tuples:
+        doc_id = doc_tf_tuple[0]
+        doc_title = docId_title_dict[doc_id]
+        docId_titles.append((doc_id, doc_title))
+    return docId_titles
+
+
 # endregion
 
-english_stopwords = frozenset(stopwords.words('english'))
-corpus_stopwords = ["category", "references", "also", "external", "links",
-                    "may", "first", "see", "history", "people", "one", "two",
-                    "part", "thumb", "including", "second", "following",
-                    "many", "however", "would", "became"]
 
-all_stopwords = english_stopwords.union(corpus_stopwords)
-RE_WORD = re.compile(r"""[\#\@\w](['\-]?\w){2,24}""", re.UNICODE)
+# region Load all the necessary things
+print("Loading indexes...")
+sleep(0.0001)
 
-bodyIndex = InvertedIndex.read_index("E:\\index\\body_index", "index")
-titleIndex = inverted_title.InvertedIndex.read_index("E:\\index\\title_index", "index")
-anchorIndex = inverted_anchor.InvertedIndex.read_index("E:\\index\\anchor_index", "index")
+for i in tqdm(range(6)):
+    if i == 0:
+        # Load body index
+        bodyIndex = InvertedIndex.read_index("E:\\index\\body_index", "index")
 
-# inverted = inverted_index_gcp.InvertedIndex()
-# bodyIndex = inverted_index_colab.InvertedIndex()
-#
-# output = open('E:\\index\\postings_gcp\\postings_gcp_index.pkl', 'rb')
-# inverted = pickle.load(output)
-# output.close()
-#
-# bodyIndex.df = inverted.df
-#
-# bodyIndex.term_total = inverted.term_total
+    if i == 1:
+        # Load title index
+        titleIndex = inverted_title.InvertedIndex.read_index("E:\\index\\title_index", "index")
 
-# print(bodyIndex.df["python"])
-# print(bodyIndex.df["chocolate"])
-# print(bodyIndex.df["mask"])
+    if i == 2:
+        # Load anchor index
+        anchorIndex = inverted_anchor.InvertedIndex.read_index("E:\\index\\anchor_index", "index")
 
-nltk.download('stopwords')
+    if i == 3:
+        # Load page rank
+        with open(Path("E:\\index\\page_rank\\") / f'{"page_rank_dict"}.pickle', 'rb') as f:
+            page_rank = pickle.load(f)
 
-# region Load posting list of body index
+    if i == 4:
+        # Load page views
+        with open(Path("E:\\index\\page_view\\") / f'{"pageviews-202108-user"}.pkl', 'rb') as f:
+            page_view = pickle.load(f)
 
-# base_dir = "E:\\index\\body_index"
-# # name = "0_posting_locs"
-#
-# onlyfiles = [f for f in listdir(base_dir) if isfile(join(base_dir, f))]
-#
-# super_posting_locs = defaultdict(list)
-# for file in onlyfiles:
-#     if not file.endswith("pickle"):
-#         continue
-#     with open(Path(base_dir) / f'{file}', 'rb') as f:
-#         print(file)
-#         posting_locs = pickle.load(f)
-#         for k, v in posting_locs.items():
-#             super_posting_locs[k].extend(v)
+    if i == 5:
+        # Load page views
+        with open(Path("E:\\index\\docId_title_dict\\") / f'{"docIdTitleDict"}.pkl', 'rb') as f:
+            docId_title_dict = pickle.load(f)
 
-# print(len(super_posting_locs))
+print("Done loading indexes")
 
 # endregion
 
-# parquetFile = spark.read.parquet("E:\\index\\multistream1_preprocessed.parquet")
-# parquetFile.show()
-
-# region Body Index DF
-
-# doc_text_pairs = parquetFile.limit(1000).select("text", "id").rdd
-# doc_text_pairs = parquetFile.select("text", "id").rdd
 
 # english_stopwords = frozenset(stopwords.words('english'))
-# corpus_stopwords = ['category', 'references', 'also', 'links', 'extenal', 'see', 'thumb']
-# RE_WORD = re.compile(r"""[\#\@\w](['\-]?\w){2,24}""", re.UNICODE)
-
+# corpus_stopwords = ["category", "references", "also", "external", "links",
+#                     "may", "first", "see", "history", "people", "one", "two",
+#                     "part", "thumb", "including", "second", "following",
+#                     "many", "however", "would", "became"]
 # all_stopwords = english_stopwords.union(corpus_stopwords)
+RE_WORD = re.compile(r"""[\#\@\w](['\-]?\w){2,24}""", re.UNICODE)
 
-# word_counts = doc_text_pairs.flatMap(lambda x: word_count(x[0], x[1]))
-
-# postings = word_counts.groupByKey().mapValues(reduce_word_counts)
-
-# endregion
-
-# region Testing and asserts
-
-# test reduce_word_count
-# token, posting_list = postings.take(1)[0]
-# assert type(token) == str
-# assert type(posting_list) == list
-# doc_id, tf = zip(*posting_list)
-# assert type(doc_id[0]) == int
-# assert type(tf[0]) == int
-# assert np.diff(doc_id).min() > 0
-# assert np.min(tf) > 0
-# assert postings.count() == 153014
-
-# postings_filtered = postings.filter(lambda x: len(x[1]) > 10)
-
-#########################################################
-
-# global statistics
-# w2df = calculate_df(postings_filtered)
-# test calculate_df types
-# token, df = w2df.take(1)[0]
-# assert type(token) == str
-# assert type(df) == int
-# test min/max df values
-# collectAsMap collects the results to the master node's memory as a dictionary.
-# we know it's not so big so this is okay.
-# w2df_dict = w2df.collectAsMap()
-# assert np.min(list(w2df_dict.values())) == 11
-# assert np.max(list(w2df_dict.values())) == 819
-# test select words
-# assert w2df_dict['first'] == 805
-# assert w2df_dict['many'] == 670
-# assert w2df_dict['used'] == 648
-
-# endregion
-
-# inverted.posting_locs = super_posting_locs
-
-# bodyIndex.posting_locs = super_posting_locs
-
-# words, pls = zip(*bodyIndex.posting_lists_iter())
-
-# inverted.df = w2df_dict
-
-print("------------")
-print("Done loading index")
-print("------------")
+# region Get all the ids from the posting list of some words
 
 try:
     python2 = []
-    pl = read_posting_list(bodyIndex, 'python')
+    pl = read_posting_list_body(bodyIndex, 'python')
     for item in pl:
         python2.append(item[0])
 except KeyError:
@@ -492,7 +288,7 @@ except KeyError:
 
 try:
     migraine2 = []
-    pl = read_posting_list(bodyIndex, 'migraine')
+    pl = read_posting_list_body(bodyIndex, 'migraine')
     for item in pl:
         migraine2.append(item[0])
 except KeyError:
@@ -500,7 +296,7 @@ except KeyError:
 
 try:
     chocolate2 = []
-    pl = read_posting_list(bodyIndex, 'chocolate')
+    pl = read_posting_list_body(bodyIndex, 'chocolate')
     for item in pl:
         chocolate2.append(item[0])
 except KeyError:
@@ -508,7 +304,7 @@ except KeyError:
 
 try:
     NBA2 = []
-    pl = read_posting_list(bodyIndex, 'NBA')
+    pl = read_posting_list_body(bodyIndex, 'NBA')
     for item in pl:
         NBA2.append(item[0])
 except KeyError:
@@ -516,7 +312,7 @@ except KeyError:
 
 try:
     yoga2 = []
-    pl = read_posting_list(bodyIndex, 'yoga')
+    pl = read_posting_list_body(bodyIndex, 'yoga')
     for item in pl:
         yoga2.append(item[0])
 except KeyError:
@@ -524,7 +320,7 @@ except KeyError:
 
 try:
     masks2 = []
-    pl = read_posting_list(bodyIndex, 'masks')
+    pl = read_posting_list_body(bodyIndex, 'masks')
     for item in pl:
         masks2.append(item[0])
 except KeyError:
@@ -532,11 +328,15 @@ except KeyError:
 
 try:
     michelin2 = []
-    pl = read_posting_list(bodyIndex, 'michelin')
+    pl = read_posting_list_body(bodyIndex, 'michelin')
     for item in pl:
         michelin2.append(item[0])
 except KeyError:
     pass
+
+# endregion
+
+# region Load words query answers from the provided Json
 
 python = [23862, 23329, 53672527, 21356332, 4920126, 5250192, 819149, 46448252, 83036, 88595, 18942, 696712, 2032271,
           1984246, 5204237, 645111, 18384111, 3673376, 25061839, 271890, 226402, 2380213, 1179348, 15586616, 50278739,
@@ -596,6 +396,8 @@ michelin = [2036409, 79732, 35052231, 644781, 50991931, 51729995, 56721897, 6058
             58067594, 3997367, 9547083, 16348889, 16184595, 44972706, 37026554, 36753304, 65601792, 66605355, 34964813,
             10873990, 13235623, 46302846, 37297021, 3463398, 32739936, 2337323]
 
+# endregion
+
 print("----------------------------------")
 print("python")
 print(set(python).intersection(python2))
@@ -603,15 +405,25 @@ print(len(python))
 print(len(python2))
 print(len(set(python).intersection(python2)))
 
-queries_to_search = {1: ["fitnessgram"]}
-print("Top 3 results for fitnessgram : ")
+queries_to_search = {1: ["python"]}
+print("Top 3 results for python : ")
 
 time1 = time()
 
-print(get_topN_score_for_queries_2(queries_to_search, bodyIndex, N=3))
+# print(get_topN_score_for_queries(queries_to_search, bodyIndex, N=100))
+# (binary_search_title(queries_to_search, titleIndex, N = 3))
+
+print("testing all 5 methods : ")
+query = ["python"]
+print(search_body(query))
+print(search_binary_title(query))
+print(search_binary_anchor(query))
+print(get_page_rank([23862]))
+print(get_page_views([23862]))
+
 
 time2 = time()
-print('Function took {:.3f} sec'.format((time2 - time1)))
+# print('Function took {:.3f} sec'.format((time2 - time1)))
 
 print("----------------------------------")
 

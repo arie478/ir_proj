@@ -1,5 +1,7 @@
 from flask import Flask, request, jsonify
 
+import Index
+
 
 class MyFlaskApp(Flask):
     def run(self, host=None, port=None, debug=None, **options):
@@ -59,7 +61,7 @@ def search_body():
     if len(query) == 0:
         return jsonify(res)
     # BEGIN SOLUTION
-
+    res = Index.search_body(query)
     # END SOLUTION
     return jsonify(res)
 
@@ -86,7 +88,7 @@ def search_title():
     if len(query) == 0:
         return jsonify(res)
     # BEGIN SOLUTION
-
+    res = Index.search_binary_title(query)
     # END SOLUTION
     return jsonify(res)
 
@@ -114,7 +116,7 @@ def search_anchor():
     if len(query) == 0:
         return jsonify(res)
     # BEGIN SOLUTION
-
+    res = Index.search_binary_anchor(query)
     # END SOLUTION
     return jsonify(res)
 
@@ -140,7 +142,7 @@ def get_pagerank():
     if len(wiki_ids) == 0:
         return jsonify(res)
     # BEGIN SOLUTION
-
+    res = Index.get_page_rank(wiki_ids)
     # END SOLUTION
     return jsonify(res)
 
@@ -168,7 +170,7 @@ def get_pageview():
     if len(wiki_ids) == 0:
         return jsonify(res)
     # BEGIN SOLUTION
-
+    res = Index.get_page_views(wiki_ids)
     # END SOLUTION
     return jsonify(res)
 
