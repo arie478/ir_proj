@@ -228,6 +228,58 @@ def match_titles_for_docs(doc_tf_tuples):
     return docId_titles
 
 
+def BM25_search_body(queries, k1=1.5, b=0.75):
+    def BM25_score(query, doc_id):
+        cWQ = Counter(query)
+        idfDict = BM25_calc_idf(query)
+        bm25 = 0
+
+        for term in cWQ:
+            if (term, doc_id) in tf:
+                bm25 += cWQ[term] * ((k1 + 1) * tf[(term, doc_id)] / (
+                        tf[(term, doc_id)] + k1 * (1 - b + b * (bodyIndex.DL[doc_id] / avgdl)))) * idfDict[term]
+        return bm25
+
+    def BM25_calc_idf(query):
+        idfDict = {}
+        for term in query:
+            if term in bodyIndex.df.keys():
+                # For every term we calculate using the formula learned at the lecture
+                idfDict[term] = math.log((total_docs - bodyIndex.df[term] + 0.5) / (bodyIndex.df[term] + 0.5) + 1)
+            else:
+                idfDict[term] = 0
+        return idfDict
+
+    avgdl = sum(bodyIndex.DL.values()) / len(bodyIndex.DL)
+    total_docs = len(bodyIndex.DL)
+
+    scores = []
+
+    relevant_docs = {}
+    tf = {}
+
+    for query_id, query_list in queries.items():
+        real_terms = []
+        for term in query_list:
+            if term in bodyIndex.df:
+                real_terms.append(term)
+        queries[query_id] = real_terms
+
+    for query_id, query_list in queries.items():
+        for term in query_list:
+            pls = read_posting_list_body(bodyIndex, term)
+            if query_id not in relevant_docs:
+                relevant_docs[query_id] = [docId_tf[0] for docId_tf in pls]
+            for docId_tf in pls:
+                tf[(term, docId_tf[0])] = docId_tf[1]
+
+    for query_id, query_list in queries.items():
+        score_pre_sort = [(doc_id, docId_title_dict[doc_id], BM25_score(query_list, doc_id)) for doc_id in relevant_docs[query_id]]
+        score_sorted = sorted(score_pre_sort, key=lambda x: x[2], reverse=True)[:100]
+        scores.append(score_sorted)
+    return scores
+
+
 # endregion
 
 
@@ -408,22 +460,25 @@ print(len(set(python).intersection(python2)))
 queries_to_search = {1: ["python"]}
 print("Top 3 results for python : ")
 
-time1 = time()
 
+
+# print(BM25_search_body(queries_to_search))
 # print(get_topN_score_for_queries(queries_to_search, bodyIndex, N=100))
 # (binary_search_title(queries_to_search, titleIndex, N = 3))
 
-print("testing all 5 methods : ")
-query = ["python"]
-print(search_body(query))
-print(search_binary_title(query))
-print(search_binary_anchor(query))
-print(get_page_rank([23862]))
-print(get_page_views([23862]))
+time1 = time()
 
+print(BM25_search_body(queries_to_search))
+# print("testing all 5 methods : ")
+# query = ["asus"]
+# print(search_body(query))
+# print(search_binary_title(query))
+# print(search_binary_anchor(query))
+# print(get_page_rank([23862]))
+# print(get_page_views([23862]))
 
 time2 = time()
-# print('Function took {:.3f} sec'.format((time2 - time1)))
+print('Search took {:.3f} sec'.format((time2 - time1)))
 
 print("----------------------------------")
 
