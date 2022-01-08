@@ -274,10 +274,95 @@ def BM25_search_body(queries, k1=1.5, b=0.75):
                 tf[(term, docId_tf[0])] = docId_tf[1]
 
     for query_id, query_list in queries.items():
-        score_pre_sort = [(doc_id, docId_title_dict[doc_id], BM25_score(query_list, doc_id)) for doc_id in relevant_docs[query_id]]
+        score_pre_sort = [(doc_id, docId_title_dict[doc_id], BM25_score(query_list, doc_id)) for doc_id in
+                          relevant_docs[query_id]]
         score_sorted = sorted(score_pre_sort, key=lambda x: x[2], reverse=True)[:100]
         scores.append(score_sorted)
     return scores
+
+
+def intersection(l1, l2):
+    """
+    This function perform an intersection between two lists.
+
+    Parameters
+    ----------
+    l1: list of documents. Each element is a doc_id.
+    l2: list of documents. Each element is a doc_id.
+
+    Returns:
+    ----------
+    list with the intersection (without duplicates) of l1 and l2
+    """
+    return list(set(l1) & set(l2))
+
+
+def precision_at_k(true_list, predicted_list, k=40):
+    """
+    This function calculate the precision@k metric.
+
+    Parameters
+    -----------
+    true_list: list of relevant documents. Each element is a doc_id.
+    predicted_list: sorted list of documents predicted as relevant. Each element is a doc_id. Sorted is performed by relevance score
+    k: integer, a number to slice the length of the predicted_list
+
+    Returns:
+    -----------
+    float, precision@k with 3 digits after the decimal point.
+    """
+    ##################################################
+    # YOUR CODE HERE
+    # We calculate using the formula learned at the lecture
+    kPredicted = predicted_list[:k]
+    precisionAtk = len(intersection(kPredicted, true_list)) / k
+    precisionAtk = round(precisionAtk, 3)
+    return precisionAtk
+    ##################################################
+
+
+def average_precision(true_list, predicted_list, k=40):
+    """
+    This function calculate the average_precision@k metric.(i.e., precision in every recall point).
+
+    Parameters
+    -----------
+    true_list: list of relevant documents. Each element is a doc_id.
+    predicted_list: sorted list of documents predicted as relevant. Each element is a doc_id. Sorted is performed by relevance score
+    k: integer, a number to slice the length of the predicted_list
+
+    Returns:
+    -----------
+    float, average precision@k with 3 digits after the decimal point.
+    """
+    ##################################################
+    # YOUR CODE HERE
+    # We calculate using the formula learned at the lecture
+    kPredicted = predicted_list[:k]
+    sumPrecisions = 0
+    total = 0
+    place = 1
+    for docId in kPredicted:
+        if docId in true_list:
+            sumPrecisions += precision_at_k(true_list, predicted_list, place)
+            total += 1
+        place += 1
+    if sumPrecisions == 0 or total == 0:
+        return 0
+    averagePrecisionAtk = sumPrecisions / total
+    return round(averagePrecisionAtk, 3)
+    ##################################################
+
+
+def MapAt40(true_list, predicted_list, N=40):
+    sum = 0
+    total = 0
+    for query_id, predicted in predicted_list.items():
+        sum += average_precision(true_list[query_id], predicted, N)
+        total += 1
+    mapAtN = sum / total
+    mapAtN = round(mapAtN, 3)
+    return mapAtN
 
 
 # endregion
@@ -460,15 +545,18 @@ print(len(set(python).intersection(python2)))
 queries_to_search = {1: ["python"]}
 print("Top 3 results for python : ")
 
-
-
 # print(BM25_search_body(queries_to_search))
 # print(get_topN_score_for_queries(queries_to_search, bodyIndex, N=100))
 # (binary_search_title(queries_to_search, titleIndex, N = 3))
 
 time1 = time()
 
-print(BM25_search_body(queries_to_search))
+# print(BM25_search_body(queries_to_search))
+predicted_list_pre = BM25_search_body(queries_to_search)
+predicted_list = [id_title_score[0] for id_title_score in predicted_list_pre[0]]
+predicted_list = {1: predicted_list}
+true_list = {1: python}
+print(MapAt40(true_list, predicted_list))
 # print("testing all 5 methods : ")
 # query = ["asus"]
 # print(search_body(query))
