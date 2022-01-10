@@ -238,7 +238,7 @@ def search_binary_title(query):
     """
     query = [term for term in query if term in titleIndex.df]
     queries_to_search = {1: query}
-    title_results = binary_search_title(queries_to_search, titleIndex, N=100)
+    title_results = binary_search_title(queries_to_search, titleIndex)
     result = match_titles_for_docs(title_results[1])
     return result
 
